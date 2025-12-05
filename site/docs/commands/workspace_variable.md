@@ -12,7 +12,7 @@ List all Workspace variables.
 **Example**
 
 ```sh
-$ tfx workspace variable list --workspace-namett-workspace                  
+$ tfx workspace variable list --workspace-name t-workspace                  
 Using config file: /Users/tstraub/.tfx.hcl
 List Variables for Workspace: tt-workspace
 ╭──────────────────────┬───────────┬──────────────┬───────────┬───────┬───────────┬───────────────────────────────────╮
@@ -25,6 +25,14 @@ List Variables for Workspace: tt-workspace
 │ var-XvP33JGaRQ3m7FP8 │ variable6 │ ./map.hcl    │ false     │ true  │ terraform │ I am a map in a file              │
 │ var-bNCzmaMNtUUDaSzN │ variable1 │ It is friday │ false     │ false │ terraform │ some important info about this... │
 ╰──────────────────────┴───────────┴──────────────┴───────────┴───────┴───────────┴───────────────────────────────────╯
+```
+
+Additionally, variables attached to Variable Sets linked to the Workspace can be showe with the `--varset-vars` flag. Optionally, add a `--json` flag to get the output in JSON format. This is useful to create a local variables file for testing.
+
+```sh
+tfx workspace variable list --workspace-name t-workspace --varset-vars
+tfx workspace variable list --workspace-name t-workspace --varset-vars --json | jq 'map({(.Key): (.Value)}) | add' >> terraform.tfvars.json
+
 ```
 
 ## `tfx workspace variable create`
@@ -156,7 +164,7 @@ Show details of a Workspace Variable.
 **Example**
 
 ```sh
-$ 
+
 ```
 
 ## `tfx workspace variable delete`
