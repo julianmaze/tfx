@@ -203,7 +203,14 @@
       "request": "launch",
       "mode": "auto",
       "program": "${fileDirname}/../main.go",
-      "args": ["variable", "list", "-w=tfx-test", "-o=json"]
+      "args": [
+        "workspace",
+        "variable",
+        "list",
+        "-w=tfx-test",
+        "--varset-vars",
+        "--json"
+      ]
     },
     {
       "name": "TFX - variable create",
@@ -226,7 +233,7 @@
       "request": "launch",
       "mode": "auto",
       "program": "${fileDirname}/../main.go",
-      "args": ["variable", "show", "-w=tfx-test", "-k=variable3"]
+      "args": ["workspace", "variable", "show", "-w=tfx-test", "-k=variable3"]
     },
     {
       "name": "TFX - project show",

@@ -25,6 +25,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type Variable struct {
+	WorkspaceVariable *tfe.Variable
+	VarSetVariable    *tfe.VariableSetVariable
+}
+
 var (
 	// `tfx variable` commands
 	variableCmd = &cobra.Command{
@@ -42,7 +47,9 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return variableList(
 				getTfxClientContext(),
-				*viperString("workspace-name"))
+				*viperString("workspace-name"),
+				*viperBool("varset-vars"),
+			)
 		},
 	}
 
@@ -153,6 +160,7 @@ var (
 
 func init() {
 	// `tfx variable list` command
+	variableListCmd.Flags().BoolP("varset-vars", "", false, "List variables from attached Variable Sets")
 	variableListCmd.Flags().StringP("workspace-name", "w", "", "Name of the Workspace")
 	variableListCmd.MarkFlagRequired("workspace-name")
 
@@ -206,8 +214,9 @@ func init() {
 	variableCmd.AddCommand(variableDeleteCmd)
 }
 
-func variablesListAll(c TfxClientContext, workspaceId string) ([]*tfe.Variable, error) {
+func variablesListAll(c TfxClientContext, workspaceId string, varsetVars bool) ([]*tfe.Variable, []*tfe.VariableSetVariable, error) {
 	allItems := []*tfe.Variable{}
+	allVarsetItems := []*tfe.VariableSetVariable{}
 	opts := tfe.VariableListOptions{
 		ListOptions: tfe.ListOptions{
 			PageNumber: 1,
@@ -217,7 +226,7 @@ func variablesListAll(c TfxClientContext, workspaceId string) ([]*tfe.Variable, 
 	for {
 		items, err := c.Client.Variables.List(c.Context, workspaceId, &opts)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		allItems = append(allItems, items.Items...)
@@ -227,24 +236,52 @@ func variablesListAll(c TfxClientContext, workspaceId string) ([]*tfe.Variable, 
 		opts.PageNumber = items.NextPage
 	}
 
-	return allItems, nil
+	if varsetVars {
+		varsetListOpts := tfe.VariableSetListOptions{
+			Include: "vars",
+			ListOptions: tfe.ListOptions{
+				PageNumber: 1,
+				PageSize:   100,
+			},
+		}
+		for {
+			vsItems, err := c.Client.VariableSets.ListForWorkspace(c.Context, workspaceId, &varsetListOpts)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			for _, varset := range vsItems.Items {
+				allVarsetItems = append(allVarsetItems, varset.Variables...)
+			}
+
+			if vsItems.CurrentPage >= vsItems.TotalPages {
+				break
+			}
+			varsetListOpts.PageNumber = vsItems.NextPage
+		}
+	}
+
+	return allItems, allVarsetItems, nil
 }
 
-func variableList(c TfxClientContext, workspaceName string) error {
+func variableList(c TfxClientContext, workspaceName string, varsetVars bool) error {
 	o.AddMessageUserProvided("List Variables for Workspace:", workspaceName)
 	workspaceId, err := getWorkspaceId(c, workspaceName)
 	if err != nil {
 		return errors.Wrap(err, "unable to read workspace id")
 	}
 
-	items, err := variablesListAll(c, workspaceId)
+	items, vsItems, err := variablesListAll(c, workspaceId, varsetVars)
 	if err != nil {
 		return errors.Wrap(err, "failed to list variables")
 	}
 
-	o.AddTableHeader("Id", "Key", "Value", "Sensitive", "HCL", "Category", "Description")
+	o.AddTableHeader("Id", "Key", "Value", "Sensitive", "HCL", "Category", "Description", "Source")
 	for _, i := range items {
-		o.AddTableRows(i.ID, i.Key, i.Value, i.Sensitive, i.HCL, i.Category, i.Description)
+		o.AddTableRows(i.ID, i.Key, i.Value, i.Sensitive, i.HCL, i.Category, i.Description, i.Workspace.ID)
+	}
+	for _, i := range vsItems {
+		o.AddTableRows(i.ID, i.Key, i.Value, i.Sensitive, i.HCL, i.Category, i.Description, i.VariableSet.Name)
 	}
 
 	return nil
@@ -306,7 +343,7 @@ func variableUpdate(c TfxClientContext, workspaceName string,
 		return errors.Wrap(err, "unable to read workspace id")
 	}
 
-	variableId, err := getVariableId(c, workspaceId, variableKey)
+	varOut, err := getVariable(c, workspaceId, variableKey)
 	if err != nil {
 		return errors.Wrap(err, "unable to read variable id")
 	}
@@ -317,7 +354,7 @@ func variableUpdate(c TfxClientContext, workspaceName string,
 	} else {
 		category = tfe.Category(tfe.CategoryTerraform)
 	}
-	variable, err := c.Client.Variables.Update(c.Context, workspaceId, variableId, tfe.VariableUpdateOptions{
+	variable, err := c.Client.Variables.Update(c.Context, workspaceId, varOut.WorkspaceVariable.ID, tfe.VariableUpdateOptions{
 		Key:         &variableKey,
 		Value:       &variableValue,
 		Description: &description,
@@ -348,23 +385,32 @@ func variableShow(c TfxClientContext, workspaceName string, variableKey string) 
 		return errors.Wrap(err, "unable to read workspace id")
 	}
 
-	variableId, err := getVariableId(c, workspaceId, variableKey)
+	varOut, err := getVariable(c, workspaceId, variableKey)
 	if err != nil {
 		return errors.Wrap(err, "unable to read variable id")
 	}
 
-	variable, err := c.Client.Variables.Read(c.Context, workspaceId, variableId)
-	if err != nil {
-		return errors.Wrap(err, "unable to read variable")
+	if varOut.WorkspaceVariable != nil {
+		variable := varOut.WorkspaceVariable
+		o.AddDeferredMessageRead("ID", variable.ID)
+		o.AddDeferredMessageRead("Key", variable.Key)
+		o.AddDeferredMessageRead("Value", variable.Value)
+		o.AddDeferredMessageRead("Sensitive", variable.Sensitive)
+		o.AddDeferredMessageRead("HCL", variable.HCL)
+		o.AddDeferredMessageRead("Category", variable.Category)
+		o.AddDeferredMessageRead("Description", variable.Description)
+		o.AddDeferredMessageRead("Source", variable.Workspace.ID)
+	} else if varOut.VarSetVariable != nil {
+		variable := varOut.VarSetVariable
+		o.AddDeferredMessageRead("ID", variable.ID)
+		o.AddDeferredMessageRead("Key", variable.Key)
+		o.AddDeferredMessageRead("Value", variable.Value)
+		o.AddDeferredMessageRead("Sensitive", variable.Sensitive)
+		o.AddDeferredMessageRead("HCL", variable.HCL)
+		o.AddDeferredMessageRead("Category", variable.Category)
+		o.AddDeferredMessageRead("Description", variable.Description)
+		o.AddDeferredMessageRead("Source", variable.VariableSet.ID)
 	}
-
-	o.AddDeferredMessageRead("ID", variable.ID)
-	o.AddDeferredMessageRead("Key", variable.Key)
-	o.AddDeferredMessageRead("Value", variable.Value)
-	o.AddDeferredMessageRead("Sensitive", variable.Sensitive)
-	o.AddDeferredMessageRead("HCL", variable.HCL)
-	o.AddDeferredMessageRead("Category", variable.Category)
-	o.AddDeferredMessageRead("Description", variable.Description)
 
 	return nil
 }
@@ -377,12 +423,12 @@ func variableDelete(c TfxClientContext, workspaceName string, variableKey string
 		return errors.Wrap(err, "unable to read workspace id")
 	}
 
-	variableId, err := getVariableId(c, workspaceId, variableKey)
+	varOut, err := getVariable(c, workspaceId, variableKey)
 	if err != nil {
 		return errors.Wrap(err, "unable to read variable id")
 	}
 
-	err = c.Client.Variables.Delete(c.Context, workspaceId, variableId)
+	err = c.Client.Variables.Delete(c.Context, workspaceId, varOut.WorkspaceVariable.ID)
 	if err != nil {
 		return errors.Wrap(err, "failed to delete variable")
 	}
@@ -393,17 +439,23 @@ func variableDelete(c TfxClientContext, workspaceName string, variableKey string
 	return nil
 }
 
-func getVariableId(c TfxClientContext, workspaceId string, variableKey string) (string, error) {
-	vars, err := variablesListAll(c, workspaceId)
+func getVariable(c TfxClientContext, workspaceId string, variableKey string) (*Variable, error) {
+	vars, varsetVars, err := variablesListAll(c, workspaceId, true)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	for _, v := range vars {
 		if v.Key == variableKey {
-			return v.ID, nil
+			return &Variable{WorkspaceVariable: v}, nil
 		}
 	}
 
-	return "", errors.New("variable key not found")
+	for _, v := range varsetVars {
+		if v.Key == variableKey {
+			return &Variable{VarSetVariable: v}, nil
+		}
+	}
+
+	return nil, errors.New("variable key not found")
 }
